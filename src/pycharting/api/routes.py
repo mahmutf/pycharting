@@ -26,6 +26,14 @@ router = APIRouter(prefix="/api", tags=["data"])
 _data_managers: Dict[str, Any] = {}
 
 
+class OverlayData(BaseModel):
+    """Overlay data with style configuration."""
+    data: list
+    style: str = "line"  # "line", "marker", "dashed"
+    color: Optional[str] = None
+    size: Optional[int] = None
+
+
 class DataResponse(BaseModel):
     """Response model for data endpoint."""
     index: list
@@ -33,8 +41,13 @@ class DataResponse(BaseModel):
     high: Optional[list] = None
     low: Optional[list] = None
     close: Optional[list] = None
-    overlays: Dict[str, list] = Field(default_factory=dict)
-    subplots: Dict[str, list] = Field(default_factory=dict)
+    # Overlays now include style metadata: {data, style, color, size}
+    overlays: Dict[str, OverlayData] = Field(default_factory=dict)
+    # Subplots can be:
+    # - Simple: {"RSI": [values...]}
+    # - Grouped: {"Stochastic": {"%K": [values...], "%D": [values...]}}
+    # - Histogram: {"Filter": {"_type": "histogram", "Buy": [values...], "Sell": [values...]}}
+    subplots: Dict[str, Any] = Field(default_factory=dict)
     start_index: int
     end_index: int
     total_length: int

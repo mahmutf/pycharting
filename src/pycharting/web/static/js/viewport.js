@@ -77,7 +77,7 @@ class ViewportManager {
                         try {
                             subplot.setScale('x', { min, max });
                         } catch (e) {
-                            // Ignore sync errors per subplot
+                            // Ignore sync errors
                         }
                     });
                 }
@@ -191,8 +191,27 @@ class ViewportManager {
      */
     async updateViewport() {
         const range = this.calculateVisibleRange();
-        
-        if (!range || !this.needsFetch(range)) {
+
+        if (!range) {
+            return;
+        }
+
+        // Even if we don't need to fetch, update subplots with cached data
+        // This ensures subplots stay in sync when panning within cached range
+        if (!this.needsFetch(range) && this.dataCache.data) {
+            this.subplotCallbacks.forEach((cb) => {
+                if (typeof cb === 'function') {
+                    // Pass cached data with current indices
+                    const data = { ...this.dataCache.data };
+                    data.xIndices = data.index.map((_, i) => (data.start_index || 0) + i);
+                    data.timestamps = data.index;
+                    cb(data, this);
+                }
+            });
+            return;
+        }
+
+        if (!this.needsFetch(range)) {
             return;
         }
         
@@ -255,15 +274,31 @@ class ViewportManager {
             ensureArray(data.close)
         ];
         
-        // Add overlays if present
+        // Add overlays if present (preserve keys for labeling/styling)
+        // New format: overlay is {data: [], style: "line"|"marker"|"dashed", color: "#hex", size: N}
+        const overlayLabels = [];
+        const overlayStyles = [];
         if (data.overlays) {
-            Object.values(data.overlays).forEach(overlay => {
-                chartData.push(overlay);
+            Object.entries(data.overlays).forEach(([label, overlay]) => {
+                overlayLabels.push(label);
+                // Handle both new format (object with data) and legacy format (array)
+                if (overlay && typeof overlay === 'object' && overlay.data) {
+                    chartData.push(overlay.data);
+                    overlayStyles.push({
+                        style: overlay.style || 'line',
+                        color: overlay.color || null,
+                        size: overlay.size || null
+                    });
+                } else {
+                    // Legacy format: overlay is just an array
+                    chartData.push(overlay);
+                    overlayStyles.push({ style: 'line', color: null, size: null });
+                }
             });
         }
-        
+
         // Update chart with indices as X, and pass timestamps for formatting
-        this.chart.setData(chartData, timestamps);
+        this.chart.setData(chartData, timestamps, overlayLabels, overlayStyles);
         
         // Ensure listeners are set up (needed if chart was just created/recreated)
         this.setupEventListeners();

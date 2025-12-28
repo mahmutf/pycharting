@@ -18,11 +18,12 @@ class PyChart {
             title: options.title || 'OHLC Chart',
             ...options
         };
-        
+
         this.chart = null;
         this.data = null;
         this.measurementButtonElement = null;
         this.exportButtonElement = null; // Track export button
+        this.lastCursorIdx = null; // Track last valid cursor index for value retention
     }
     
     /**
@@ -113,14 +114,18 @@ class PyChart {
      * Set chart data and render
      * @param {Array} data - Chart data [xValues, open, high, low, close, ...overlays]
      * @param {Array} timestamps - Optional array of timestamps corresponding to xValues
+     * @param {Array} overlayLabels - Optional labels for overlay series (same order as overlays)
+     * @param {Array} overlayStyles - Optional style configs for overlays [{style, color, size}, ...]
      */
-    setData(data, timestamps = null) {
+    setData(data, timestamps = null, overlayLabels = null, overlayStyles = null) {
         const prevLen = this.data ? this.data.length : null;
         const prevHadTimestamps = this.timestamps != null;
         const nowHasTimestamps = timestamps != null;
-        
+
         this.data = data;
         this.timestamps = timestamps;
+        this.overlayLabels = overlayLabels;
+        this.overlayStyles = overlayStyles;
         
         // Rebuild chart if:
         // 1. Series count changed (e.g., overlays added)
@@ -152,33 +157,53 @@ class PyChart {
     }
 
     /**
+     * Get grid color based on current theme (reads CSS variable)
+     */
+    getGridColor() {
+        const style = getComputedStyle(document.body);
+        return style.getPropertyValue('--grid-color').trim() || '#2a2a4a';
+    }
+
+    /**
+     * Get axis color based on current theme (reads CSS variable)
+     */
+    getAxisColor() {
+        const style = getComputedStyle(document.body);
+        return style.getPropertyValue('--text-secondary').trim() || '#888';
+    }
+
+    /**
      * Helper to format x-axis values (indices) to dates
      */
     formatDate(index) {
+        const barIdx = Math.round(index);
+
         if (!this.timestamps) {
-            return index;
+            return `[${barIdx}]`;
         }
-        
+
         if (this.data && this.data[0] && this.data[0].length > 0) {
             const startIndex = this.data[0][0];
             const dataIndex = Math.round(index - startIndex);
-            
+
             if (dataIndex >= 0 && dataIndex < this.timestamps.length) {
                 const val = this.timestamps[dataIndex];
-                
+
                 // Heuristic: Only format as date if value looks like a timestamp (milliseconds)
                 // Threshold: Year 1980 (~3.15e11 ms)
                 if (typeof val === 'number' && val > 315360000000) {
                     const date = new Date(val);
-                    return date.toLocaleString(undefined, {
-                        month: 'numeric', day: 'numeric', 
-                        hour: '2-digit', minute: '2-digit'
-                    });
+                    // Short format: "[barIdx] 10/21 14:30" for x-axis labels
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    const hours = String(date.getHours()).padStart(2, '0');
+                    const mins = String(date.getMinutes()).padStart(2, '0');
+                    return `[${barIdx}] ${month}/${day} ${hours}:${mins}`;
                 }
-                return val;
+                return `[${barIdx}] ${val}`;
             }
         }
-        return index;
+        return `[${barIdx}]`;
     }
     
     /**
@@ -190,45 +215,127 @@ class PyChart {
         // Check if Open series exists and contains any non-null values
         const openSeries = data[1];
         const hasOHLC = openSeries && Array.isArray(openSeries) && openSeries.some(v => v != null);
-        
+
+        // Helper to get value with fallback to last cursor position
+        // When cursor leaves, v is null but we want to retain the last displayed value
+        const getValueWithRetention = (u, v, seriesIdx) => {
+            if (v != null) {
+                return v.toFixed(5);
+            }
+            // Cursor left chart - use last known cursor index to get value
+            if (self.lastCursorIdx != null && u.data && u.data[seriesIdx]) {
+                const lastVal = u.data[seriesIdx][self.lastCursorIdx];
+                if (lastVal != null) {
+                    return lastVal.toFixed(5);
+                }
+            }
+            return '-';
+        };
+
         // Build series configuration
         const series = [
             {
                 label: 'Time',
-                value: (u, v) => self.formatDate(v)
+                value: (u, v) => {
+                    if (v != null) {
+                        return self.formatDate(v);
+                    }
+                    // Use last cursor index for time display too
+                    if (self.lastCursorIdx != null && u.data && u.data[0]) {
+                        const lastX = u.data[0][self.lastCursorIdx];
+                        if (lastX != null) {
+                            return self.formatDate(lastX);
+                        }
+                    }
+                    return '-';
+                }
             },
             {
                 label: 'Open',
                 show: false,
+                value: (u, v) => getValueWithRetention(u, v, 1),
             },
             {
                 label: 'High',
                 show: false,
+                value: (u, v) => getValueWithRetention(u, v, 2),
             },
             {
                 label: 'Low',
                 show: false,
+                value: (u, v) => getValueWithRetention(u, v, 3),
             },
             {
                 label: 'Close',
                 stroke: hasOHLC ? 'transparent' : '#2196F3',
                 width: hasOHLC ? 0 : 2,
                 fill: 'transparent',
+                value: (u, v) => getValueWithRetention(u, v, 4),
             }
         ];
-        
+
         // Add overlay series (starting from index 5)
         if (data.length > 5) {
+            const defaultColors = ['#2196F3', '#FF9800', '#9C27B0', '#4CAF50'];
+
             for (let i = 5; i < data.length; i++) {
-                const colors = ['#2196F3', '#FF9800', '#9C27B0', '#4CAF50'];
-                series.push({
-                    label: `Overlay ${i - 4}`,
-                    stroke: colors[(i - 5) % colors.length],
-                    width: 2,
-                });
+                const overlayIdx = i - 5;
+                const label = (this.overlayLabels && this.overlayLabels[overlayIdx]) ? this.overlayLabels[overlayIdx] : `Overlay ${overlayIdx + 1}`;
+
+                // Get style from overlayStyles if available, otherwise default to line
+                const styleConfig = (this.overlayStyles && this.overlayStyles[overlayIdx]) || { style: 'line' };
+                const style = styleConfig.style || 'line';
+                const customColor = styleConfig.color;
+                const customSize = styleConfig.size;
+
+                // Determine rendering mode from style config
+                const renderAsMarker = style === 'marker';
+                const renderAsDashed = style === 'dashed';
+
+                // Use custom color or fall back to default color palette
+                const stroke = customColor || defaultColors[overlayIdx % defaultColors.length];
+
+                // Capture seriesIdx for closure
+                const seriesIdx = i;
+                const seriesConfig = {
+                    label,
+                    stroke,
+                    width: renderAsMarker ? 0 : 2,
+                    points: renderAsMarker ? {
+                        show: true,
+                        size: customSize || 10,
+                        fill: stroke,
+                        stroke: '#ffffff',
+                        width: 2,
+                    } : { show: false },
+                    value: (u, v) => getValueWithRetention(u, v, seriesIdx),
+                };
+
+                // Add dashed line style if specified
+                if (renderAsDashed) {
+                    seriesConfig.dash = [6, 4];
+                }
+
+                series.push(seriesConfig);
             }
         }
-        
+
+        // Create cursor tracking plugin to track last valid cursor index
+        const cursorTrackingPlugin = () => ({
+            hooks: {
+                setCursor: [
+                    (u) => {
+                        // Track the last valid cursor index (when cursor is over data)
+                        if (u.cursor.idx != null) {
+                            self.lastCursorIdx = u.cursor.idx;
+                        }
+                        // Note: We intentionally do NOT reset lastCursorIdx when cursor leaves
+                        // This allows values to persist until a new bar is hovered
+                    }
+                ]
+            }
+        });
+
         return {
             ...this.options,
             series,
@@ -242,23 +349,31 @@ class PyChart {
             },
             axes: [
                 {
-                    stroke: '#888',
-                    grid: { stroke: '#eee', width: 1 },
+                    stroke: this.getAxisColor(),
+                    grid: { stroke: this.getGridColor(), width: 1 },
+                    space: 100,  // Minimum pixels between x-axis labels to prevent overlap
+                    size: 40,    // Fixed height for x-axis area
                     values: (u, vals) => vals.map(v => {
                         const idx = Math.round(v);
                         return self.formatDate(idx);
                     }),
                 },
                 {
-                    stroke: '#888',
-                    grid: { stroke: '#eee', width: 1 },
-                    values: (u, vals) => vals.map(v => v.toFixed(2)),
+                    stroke: this.getAxisColor(),
+                    grid: { stroke: this.getGridColor(), width: 1 },
+                    size: 60,    // Fixed width for y-axis area
+                    values: (u, vals) => vals.map(v => v.toFixed(5)),
                 }
             ],
-            plugins: hasOHLC ? [this.candlestickPlugin()] : [],
+            plugins: hasOHLC ? [this.candlestickPlugin(), cursorTrackingPlugin()] : [cursorTrackingPlugin()],
             cursor: {
                 drag: { x: false, y: false },
-                sync: { key: 'pycharting' }
+                sync: { key: 'pycharting' },
+                focus: { prox: Infinity },  // Keep values visible when mouse leaves chart
+            },
+            legend: {
+                live: true,  // Update values on cursor move
+                show: true,
             }
         };
     }
@@ -541,8 +656,8 @@ class PyChart {
             const boxWidth = maxWidth + 20;
             const boxHeight = 60;
             
-            // Draw box background
-            overlayCtx.fillStyle = 'rgba(33, 33, 33, 0.9)';
+            // Draw box background (dark mode)
+            overlayCtx.fillStyle = 'rgba(26, 26, 46, 0.95)';
             overlayCtx.fillRect(boxX - boxWidth / 2, boxY, boxWidth, boxHeight);
             
             // Draw box border
@@ -752,16 +867,16 @@ class PyChart {
         try {
             // Save original background
             const originalBg = this.container.style.backgroundColor;
-            
-            // Temporarily set white background for export
-            this.container.style.backgroundColor = '#ffffff';
+
+            // Temporarily set dark background for export (matching dark theme)
+            this.container.style.backgroundColor = '#1a1a2e';
             
             // Dynamically load html2canvas
             const html2canvas = (await import('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/+esm')).default;
             
             // Capture the entire container (chart + overlays)
             const canvas = await html2canvas(this.container, {
-                backgroundColor: '#ffffff',
+                backgroundColor: '#1a1a2e',
                 scale: 2, // 2x resolution for better quality
                 logging: false,
                 useCORS: true
@@ -837,17 +952,18 @@ class PyChart {
             top: 10px;
             right: 10px;
             padding: 8px 12px;
-            background: rgba(255, 255, 255, 0.9);
-            border: 1px solid #ccc;
+            background: rgba(30, 30, 50, 0.95);
+            border: 1px solid #3a3a5e;
             border-radius: 4px;
             cursor: pointer;
             font-size: 14px;
             z-index: 1000;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            color: #e0e0e0;
         `;
-        
-        btn.onmouseover = () => btn.style.background = 'rgba(255, 255, 255, 1)';
-        btn.onmouseout = () => btn.style.background = 'rgba(255, 255, 255, 0.9)';
+
+        btn.onmouseover = () => btn.style.background = 'rgba(40, 40, 70, 1)';
+        btn.onmouseout = () => btn.style.background = 'rgba(30, 30, 50, 0.95)';
         
         btn.onclick = () => {
             const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');

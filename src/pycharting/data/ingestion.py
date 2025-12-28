@@ -10,9 +10,12 @@ This module is responsible for:
 The `DataManager` class is the core component here, acting as the optimized data store for a chart session.
 """
 
-from typing import Optional, Union, List, Dict, Any
+from typing import Optional, Union, Dict, Any
 import pandas as pd
 import numpy as np
+
+SubplotSeries = Union[pd.Series, np.ndarray, list]
+SubplotsInput = Dict[str, Union[SubplotSeries, Dict[str, SubplotSeries]]]
 
 
 class DataValidationError(Exception):
@@ -27,7 +30,7 @@ def validate_input(
     low: Optional[Union[pd.Series, np.ndarray]] = None,
     close: Optional[Union[pd.Series, np.ndarray]] = None,
     overlays: Optional[Dict[str, Union[pd.Series, np.ndarray]]] = None,
-    subplots: Optional[Dict[str, Union[pd.Series, np.ndarray]]] = None,
+    subplots: Optional[SubplotsInput] = None,
 ) -> Dict[str, Any]:
     """
     Validate and normalize input data for OHLC charting.
@@ -159,16 +162,45 @@ def validate_input(
     }
     
     # Validate and convert overlays
+    # Supports two formats:
+    # - {"SMA 20": array}                                        # Simple line overlay
+    # - {"Markers": {"data": array, "style": "marker", ...}}     # Styled overlay
     if overlays:
         for name, data in overlays.items():
-            arr = to_array(data, f"Overlay '{name}'")
-            result["overlays"][name] = arr
+            if isinstance(data, dict) and "data" in data:
+                # Styled overlay format
+                arr = to_array(data["data"], f"Overlay '{name}'")
+                result["overlays"][name] = {
+                    "data": arr,
+                    "style": data.get("style", "line"),  # "line", "marker", "dashed"
+                    "color": data.get("color"),          # Optional custom color
+                    "size": data.get("size"),            # Optional marker size
+                }
+            else:
+                # Simple format - just the array (backward compatible)
+                arr = to_array(data, f"Overlay '{name}'")
+                result["overlays"][name] = {"data": arr, "style": "line"}
     
-    # Validate and convert subplots
+    # Validate and convert subplots.
+    # Supports three formats:
+    # - {"RSI": array}                                    # Simple line subplot
+    # - {"Stochastic": {"%K": array, "%D": array}}        # Grouped line subplot
+    # - {"Filter": {"_type": "histogram", "Buy": array, "Sell": array}}  # Histogram subplot
     if subplots:
         for name, data in subplots.items():
-            arr = to_array(data, f"Subplot '{name}'")
-            result["subplots"][name] = arr
+            if isinstance(data, dict):
+                nested: dict[str, Any] = {}
+                for series_name, series_data in data.items():
+                    # Preserve _type metadata key (not an array)
+                    if series_name == "_type":
+                        nested["_type"] = series_data
+                    else:
+                        arr = to_array(series_data, f"Subplot '{name}.{series_name}'")
+                        nested[series_name] = arr
+                result["subplots"][name] = nested
+            else:
+                arr = to_array(data, f"Subplot '{name}'")
+                result["subplots"][name] = arr
     
     return result
 
@@ -186,7 +218,7 @@ class DataManager:
         low: Optional[Union[pd.Series, np.ndarray]] = None,
         close: Optional[Union[pd.Series, np.ndarray]] = None,
         overlays: Optional[Dict[str, Union[pd.Series, np.ndarray]]] = None,
-        subplots: Optional[Dict[str, Union[pd.Series, np.ndarray]]] = None,
+        subplots: Optional[SubplotsInput] = None,
     ):
         # Validate input and get normalized arrays
         validated = validate_input(index, open, high, low, close, overlays, subplots)
@@ -215,7 +247,7 @@ class DataManager:
     @property
     def overlays(self) -> Dict[str, np.ndarray]: return self._overlays
     @property
-    def subplots(self) -> Dict[str, np.ndarray]: return self._subplots
+    def subplots(self) -> Dict[str, Any]: return self._subplots
     @property
     def length(self) -> int: return self._length
     def __len__(self) -> int: return self._length
@@ -268,10 +300,27 @@ class DataManager:
             "subplots": {},
         }
         
-        for name, data in self._overlays.items():
-            result["overlays"][name] = data[start_index:end_index].tolist()
+        for name, overlay_info in self._overlays.items():
+            # Overlay is now a dict with "data" array and optional style metadata
+            data_arr = overlay_info["data"]
+            result["overlays"][name] = {
+                "data": data_arr[start_index:end_index].tolist(),
+                "style": overlay_info.get("style", "line"),
+                "color": overlay_info.get("color"),
+                "size": overlay_info.get("size"),
+            }
         
         for name, data in self._subplots.items():
-            result["subplots"][name] = data[start_index:end_index].tolist()
+            if isinstance(data, dict):
+                nested: dict[str, Any] = {}
+                for series_name, series_data in data.items():
+                    # Preserve _type metadata (not an array, just pass through)
+                    if series_name == "_type":
+                        nested["_type"] = series_data
+                    else:
+                        nested[series_name] = series_data[start_index:end_index].tolist()
+                result["subplots"][name] = nested
+            else:
+                result["subplots"][name] = data[start_index:end_index].tolist()
         
         return result

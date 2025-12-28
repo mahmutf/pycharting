@@ -18,6 +18,7 @@ and Jupyter notebook integration.
 import webbrowser
 import time
 import logging
+import socket
 from typing import Optional, Dict, Any, Union
 import numpy as np
 import pandas as pd
@@ -27,6 +28,38 @@ from pycharting.core.lifecycle import ChartServer
 from pycharting.api.routes import _data_managers
 
 logger = logging.getLogger(__name__)
+
+
+def _get_local_ip() -> str:
+    """Get the local machine's IP address that can be reached externally.
+
+    Uses a UDP socket trick - connects to an external address without sending data,
+    then reads which local IP was used. Falls back to hostname resolution or localhost.
+    """
+    try:
+        # Create UDP socket (doesn't actually send anything)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        # Connect to a public IP (Google DNS) - this doesn't send data,
+        # just determines which local interface would be used
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        return local_ip
+    except Exception:
+        pass
+
+    # Fallback: try hostname resolution
+    try:
+        hostname = socket.gethostname()
+        local_ip = socket.gethostbyname(hostname)
+        if not local_ip.startswith("127."):
+            return local_ip
+    except Exception:
+        pass
+
+    # Last resort
+    return "127.0.0.1"
 
 # Global server instance
 _active_server: Optional[ChartServer] = None
@@ -41,10 +74,12 @@ def plot(
     overlays: Optional[Dict[str, Union[np.ndarray, pd.Series, list]]] = None,
     subplots: Optional[Dict[str, Union[np.ndarray, pd.Series, list]]] = None,
     session_id: str = "default",
+    host: str = "127.0.0.1",
     port: Optional[int] = None,
     open_browser: bool = True,
     server_timeout: float = 2.0,
     block: bool = True,
+    external_host: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate and display an interactive OHLC (Open-High-Low-Close) or Line chart.
@@ -66,16 +101,23 @@ def plot(
         low (Optional[Union[np.ndarray, pd.Series, list]]): Lowest prices during the interval.
         close (Optional[Union[np.ndarray, pd.Series, list]]): Closing prices. If only `close` is provided (without open/high/low),
             a line chart will be rendered instead of candlesticks.
-        overlays (Optional[Dict[str, Union[np.ndarray, pd.Series, list]]]): A dictionary of additional series to plot *over* the main price chart.
-            Keys are labels (e.g., "SMA 50"), values are data arrays. Useful for Moving Averages, Bollinger Bands, etc.
+        overlays (Optional[Dict[str, Union[np.ndarray, pd.Series, list, dict]]]): A dictionary of additional series to plot *over* the main price chart.
+            Keys are labels. Values can be:
+            - Simple: data array (renders as line) - e.g., `{"SMA 50": sma_array}`
+            - Styled: dict with `data`, `style`, `color`, `size` - e.g., `{"Markers": {"data": arr, "style": "marker", "color": "#00C853"}}`
+            Supported styles: "line" (default), "marker" (points), "dashed" (dashed line).
         subplots (Optional[Dict[str, Union[np.ndarray, pd.Series, list]]]): A dictionary of series to plot in separate panels *below* the main chart.
             Keys are labels (e.g., "RSI", "Volume"), values are data arrays.
         session_id (str): A unique identifier for this dataset. Use different IDs to keep multiple charts active simultaneously.
             Defaults to "default".
+        host (str): Host address to bind the server to. Use "0.0.0.0" to allow external connections (e.g., from Docker host).
+            Defaults to "127.0.0.1" (localhost only).
         port (Optional[int]): Specific port to run the server on. If `None` (default), a free port is automatically found.
         open_browser (bool): If `True` (default), automatically launches the system's default web browser to view the chart.
         server_timeout (float): Maximum time (in seconds) to wait for the server to start before proceeding. Defaults to 2.0.
         block (bool): If `True` (default), blocks execution until the browser page is closed. Useful in Jupyter notebooks.
+        external_host (Optional[str]): Override hostname/IP shown in URLs. When binding to "0.0.0.0", the local IP
+            is auto-detected. Use this parameter to override with a specific hostname or IP if needed.
 
     Returns:
         Dict[str, Any]: A dictionary containing execution details:
@@ -160,9 +202,9 @@ def plot(
         if _active_server is None or not _active_server.is_running:
             logger.info("Starting ChartServer...")
             _active_server = ChartServer(
-                host="127.0.0.1",
+                host=host,
                 port=port,
-                auto_shutdown_timeout=3.0  # 3 seconds after disconnect
+                auto_shutdown_timeout=60.0  # 60 seconds after disconnect (handles browser throttling)
             )
             server_info = _active_server.start_server()
             
@@ -177,7 +219,19 @@ def plot(
         # Construct chart URL with session ID and timestamp to bust cache
         # Use viewport demo which pulls data from the API for the given session
         ts = int(time.time())
-        chart_url = f"{server_info['url']}/static/viewport-demo.html?session={session_id}&v={ts}"
+
+        # Determine display host for URLs
+        # Priority: external_host > auto-detect (if 0.0.0.0) > server bind host
+        if external_host:
+            display_host = external_host
+        elif server_info['host'] == "0.0.0.0":
+            # Auto-detect local IP when binding to all interfaces
+            display_host = _get_local_ip()
+        else:
+            display_host = server_info['host']
+
+        display_url = f"http://{display_host}:{server_info['port']}"
+        chart_url = f"{display_url}/static/viewport-demo.html?session={session_id}&v={ts}"
         
         # Open browser if requested
         if open_browser:
@@ -191,7 +245,7 @@ def plot(
         result = {
             "status": "success",
             "url": chart_url,
-            "server_url": server_info['url'],
+            "server_url": display_url,
             "session_id": session_id,
             "data_points": data_manager.length,
             "server_running": _active_server.is_running if _active_server else False,
