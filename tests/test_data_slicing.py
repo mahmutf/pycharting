@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 import time
-from src.data.ingestion import DataManager
+from pycharting.data.ingestion import DataManager
 
 
 class TestGetChunk:
@@ -158,8 +158,10 @@ class TestGetChunk:
         assert len(chunk["overlays"]) == 2
         assert "SMA20" in chunk["overlays"]
         assert "EMA10" in chunk["overlays"]
-        assert chunk["overlays"]["SMA20"] == [103, 104, 105, 106, 107]
-        assert len(chunk["overlays"]["EMA10"]) == 5
+        # Overlays are now styled objects with 'data', 'style', 'color', 'size' keys
+        assert chunk["overlays"]["SMA20"]["data"] == [103, 104, 105, 106, 107]
+        assert chunk["overlays"]["SMA20"]["style"] == "line"
+        assert len(chunk["overlays"]["EMA10"]["data"]) == 5
     
     def test_chunk_with_subplots(self):
         """Test chunk includes subplot data."""

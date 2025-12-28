@@ -49,13 +49,15 @@ class TestValidateInput:
             "SMA20": np.array([101, 102, 102, 103, 103]),
             "EMA10": np.array([100, 101, 101, 102, 102]),
         }
-        
+
         result = validate_input(index, open_data, high, low, close, overlays=overlays)
-        
+
         assert len(result["overlays"]) == 2
         assert "SMA20" in result["overlays"]
         assert "EMA10" in result["overlays"]
-        assert np.array_equal(result["overlays"]["SMA20"], [101, 102, 102, 103, 103])
+        # Overlays are now styled objects with 'data' and 'style' keys
+        assert np.array_equal(result["overlays"]["SMA20"]["data"], [101, 102, 102, 103, 103])
+        assert result["overlays"]["SMA20"]["style"] == "line"
     
     def test_with_subplots(self):
         """Test validation with subplot data."""
@@ -191,14 +193,15 @@ class TestDataManager:
         close = np.array([104, 103, 104, 105, 104])
         overlays = {"SMA20": np.array([101, 102, 102, 103, 103])}
         subplots = {"Volume": np.array([1000, 1200, 1100, 1300, 1150])}
-        
+
         dm = DataManager(index, open_data, high, low, close, overlays, subplots)
-        
+
         assert len(dm.overlays) == 1
         assert "SMA20" in dm.overlays
         assert len(dm.subplots) == 1
         assert "Volume" in dm.subplots
-        assert np.array_equal(dm.overlays["SMA20"], [101, 102, 102, 103, 103])
+        # Overlays are now styled objects with 'data' and 'style' keys
+        assert np.array_equal(dm.overlays["SMA20"]["data"], [101, 102, 102, 103, 103])
     
     def test_invalid_data_raises_error(self):
         """Test that invalid OHLC data raises DataValidationError."""
@@ -336,3 +339,245 @@ class TestDataManager:
         # Expected timestamp (1704067200000 for 2024-01-01 UTC)
         expected_ts = 1704067200000
         assert chunk["index"][0] == expected_ts
+
+
+class TestStyledOverlays:
+    """Tests for styled overlay support (new feature)."""
+
+    def test_simple_overlay_becomes_styled(self):
+        """Test that simple overlays are converted to styled format with line style."""
+        index = np.arange(5)
+        open_data = np.array([100, 102, 101, 103, 102])
+        high = np.array([105, 106, 105, 107, 106])
+        low = np.array([99, 100, 99, 101, 100])
+        close = np.array([104, 103, 104, 105, 104])
+        overlays = {"SMA20": np.array([101, 102, 102, 103, 103])}
+
+        result = validate_input(index, open_data, high, low, close, overlays=overlays)
+
+        # Simple overlay should be converted to styled format
+        assert "SMA20" in result["overlays"]
+        assert isinstance(result["overlays"]["SMA20"], dict)
+        assert "data" in result["overlays"]["SMA20"]
+        assert result["overlays"]["SMA20"]["style"] == "line"
+        assert np.array_equal(result["overlays"]["SMA20"]["data"], [101, 102, 102, 103, 103])
+
+    def test_styled_overlay_with_marker(self):
+        """Test styled overlay with marker style."""
+        index = np.arange(5)
+        open_data = np.array([100, 102, 101, 103, 102])
+        high = np.array([105, 106, 105, 107, 106])
+        low = np.array([99, 100, 99, 101, 100])
+        close = np.array([104, 103, 104, 105, 104])
+        overlays = {
+            "Highlights": {
+                "data": np.array([np.nan, 106, np.nan, 107, np.nan]),
+                "style": "marker",
+                "color": "#00C853",
+                "size": 10,
+            }
+        }
+
+        result = validate_input(index, open_data, high, low, close, overlays=overlays)
+
+        assert "Highlights" in result["overlays"]
+        assert result["overlays"]["Highlights"]["style"] == "marker"
+        assert result["overlays"]["Highlights"]["color"] == "#00C853"
+        assert result["overlays"]["Highlights"]["size"] == 10
+
+    def test_styled_overlay_with_dashed(self):
+        """Test styled overlay with dashed line style."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        overlays = {
+            "Threshold": {
+                "data": np.array([107, 107, 107, 107, 107]),
+                "style": "dashed",
+                "color": "#FF0000",
+            }
+        }
+
+        result = validate_input(index, close, close + 1, close - 1, close, overlays=overlays)
+
+        assert result["overlays"]["Threshold"]["style"] == "dashed"
+        assert result["overlays"]["Threshold"]["color"] == "#FF0000"
+        assert result["overlays"]["Threshold"]["size"] is None  # Not provided
+
+    def test_mixed_overlay_formats(self):
+        """Test mixing simple and styled overlay formats."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        overlays = {
+            "SMA": np.array([101, 102, 102, 103, 103]),  # Simple
+            "Markers": {
+                "data": np.array([np.nan, 106, np.nan, 107, np.nan]),
+                "style": "marker",
+            },  # Styled
+        }
+
+        result = validate_input(index, close, close + 1, close - 1, close, overlays=overlays)
+
+        assert result["overlays"]["SMA"]["style"] == "line"
+        assert result["overlays"]["Markers"]["style"] == "marker"
+
+
+class TestGroupedSubplots:
+    """Tests for grouped subplot support (new feature)."""
+
+    def test_simple_subplot_unchanged(self):
+        """Test that simple subplots still work as before."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        subplots = {"RSI": np.array([55, 58, 52, 60, 57])}
+
+        result = validate_input(index, close, close + 1, close - 1, close, subplots=subplots)
+
+        assert "RSI" in result["subplots"]
+        # Simple subplot stays as array, not dict
+        assert isinstance(result["subplots"]["RSI"], np.ndarray)
+        assert np.array_equal(result["subplots"]["RSI"], [55, 58, 52, 60, 57])
+
+    def test_grouped_subplot(self):
+        """Test grouped subplot with multiple series (e.g., Stochastic %K/%D)."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        subplots = {
+            "Stochastic": {
+                "%K": np.array([70, 75, 72, 80, 78]),
+                "%D": np.array([68, 72, 70, 76, 75]),
+            }
+        }
+
+        result = validate_input(index, close, close + 1, close - 1, close, subplots=subplots)
+
+        assert "Stochastic" in result["subplots"]
+        assert isinstance(result["subplots"]["Stochastic"], dict)
+        assert "%K" in result["subplots"]["Stochastic"]
+        assert "%D" in result["subplots"]["Stochastic"]
+        assert np.array_equal(result["subplots"]["Stochastic"]["%K"], [70, 75, 72, 80, 78])
+        assert np.array_equal(result["subplots"]["Stochastic"]["%D"], [68, 72, 70, 76, 75])
+
+    def test_histogram_subplot(self):
+        """Test histogram subplot with _type metadata."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        subplots = {
+            "Signals": {
+                "_type": "histogram",
+                "Positive": np.array([1, 0, 1, 1, 0]),
+                "Negative": np.array([0, 1, 0, 0, 1]),
+            }
+        }
+
+        result = validate_input(index, close, close + 1, close - 1, close, subplots=subplots)
+
+        assert "Signals" in result["subplots"]
+        assert result["subplots"]["Signals"]["_type"] == "histogram"
+        assert np.array_equal(result["subplots"]["Signals"]["Positive"], [1, 0, 1, 1, 0])
+        assert np.array_equal(result["subplots"]["Signals"]["Negative"], [0, 1, 0, 0, 1])
+
+    def test_grouped_subplot_length_validation(self):
+        """Test that grouped subplot series are validated for length."""
+        index = np.arange(5)
+        close = np.array([104, 103, 104, 105, 104])
+        subplots = {
+            "Stochastic": {
+                "%K": np.array([70, 75, 72]),  # Wrong length!
+                "%D": np.array([68, 72, 70, 76, 75]),
+            }
+        }
+
+        with pytest.raises(DataValidationError, match="does not match"):
+            validate_input(index, close, close + 1, close - 1, close, subplots=subplots)
+
+
+class TestDataManagerStyledOverlays:
+    """Tests for DataManager with styled overlays."""
+
+    def test_get_chunk_styled_overlay(self):
+        """Test get_chunk returns styled overlay metadata."""
+        index = np.arange(10)
+        close = np.random.randn(10) + 100
+        overlays = {
+            "Markers": {
+                "data": np.array([np.nan] * 5 + [105, 106, 107, 108, 109]),
+                "style": "marker",
+                "color": "#00FF00",
+                "size": 8,
+            }
+        }
+
+        dm = DataManager(index, close, close + 1, close - 1, close, overlays=overlays)
+        chunk = dm.get_chunk(5, 10)
+
+        assert "Markers" in chunk["overlays"]
+        assert chunk["overlays"]["Markers"]["style"] == "marker"
+        assert chunk["overlays"]["Markers"]["color"] == "#00FF00"
+        assert chunk["overlays"]["Markers"]["size"] == 8
+        assert len(chunk["overlays"]["Markers"]["data"]) == 5
+
+    def test_get_chunk_simple_overlay_has_style(self):
+        """Test that simple overlays in get_chunk have style info."""
+        index = np.arange(10)
+        close = np.random.randn(10) + 100
+        overlays = {"SMA": np.array(range(10))}
+
+        dm = DataManager(index, close, close + 1, close - 1, close, overlays=overlays)
+        chunk = dm.get_chunk(0, 5)
+
+        assert chunk["overlays"]["SMA"]["style"] == "line"
+        assert chunk["overlays"]["SMA"]["color"] is None
+        assert len(chunk["overlays"]["SMA"]["data"]) == 5
+
+
+class TestDataManagerGroupedSubplots:
+    """Tests for DataManager with grouped subplots."""
+
+    def test_get_chunk_grouped_subplot(self):
+        """Test get_chunk correctly slices grouped subplots."""
+        index = np.arange(10)
+        close = np.random.randn(10) + 100
+        subplots = {
+            "Stochastic": {
+                "%K": np.array(range(10)),
+                "%D": np.array(range(10, 20)),
+            }
+        }
+
+        dm = DataManager(index, close, close + 1, close - 1, close, subplots=subplots)
+        chunk = dm.get_chunk(2, 5)
+
+        assert "Stochastic" in chunk["subplots"]
+        assert chunk["subplots"]["Stochastic"]["%K"] == [2, 3, 4]
+        assert chunk["subplots"]["Stochastic"]["%D"] == [12, 13, 14]
+
+    def test_get_chunk_histogram_subplot(self):
+        """Test get_chunk preserves _type metadata in histogram subplots."""
+        index = np.arange(10)
+        close = np.random.randn(10) + 100
+        subplots = {
+            "Signals": {
+                "_type": "histogram",
+                "Positive": np.array([1, 0, 1, 0, 1, 0, 1, 0, 1, 0]),
+                "Negative": np.array([0, 1, 0, 1, 0, 1, 0, 1, 0, 1]),
+            }
+        }
+
+        dm = DataManager(index, close, close + 1, close - 1, close, subplots=subplots)
+        chunk = dm.get_chunk(0, 4)
+
+        assert chunk["subplots"]["Signals"]["_type"] == "histogram"
+        assert chunk["subplots"]["Signals"]["Positive"] == [1, 0, 1, 0]
+        assert chunk["subplots"]["Signals"]["Negative"] == [0, 1, 0, 1]
+
+    def test_get_chunk_simple_subplot(self):
+        """Test get_chunk with simple (non-grouped) subplot."""
+        index = np.arange(10)
+        close = np.random.randn(10) + 100
+        subplots = {"Volume": np.array(range(100, 110))}
+
+        dm = DataManager(index, close, close + 1, close - 1, close, subplots=subplots)
+        chunk = dm.get_chunk(0, 3)
+
+        # Simple subplot is just a list, not a dict
+        assert chunk["subplots"]["Volume"] == [100, 101, 102]

@@ -2,11 +2,12 @@
 
 import pytest
 import numpy as np
+import socket
 import time
 from unittest.mock import patch, MagicMock
 
-from src.api.interface import plot, stop_server, get_server_status, _active_server
-from src.api.routes import _data_managers
+from pycharting.api.interface import plot, stop_server, get_server_status, _active_server, _get_local_ip
+from pycharting.api.routes import _data_managers
 
 
 @pytest.fixture(autouse=True)
@@ -307,3 +308,144 @@ class TestIntegration:
         assert len(_data_managers) >= 3
         for i in range(3):
             assert f'session_{i}' in _data_managers
+
+
+class TestGetLocalIP:
+    """Tests for the _get_local_ip() helper function."""
+
+    def test_get_local_ip_returns_string(self):
+        """Test that _get_local_ip returns a valid IP string."""
+        ip = _get_local_ip()
+        assert isinstance(ip, str)
+        # Should be a valid IP format (either localhost or actual IP)
+        parts = ip.split('.')
+        assert len(parts) == 4
+        for part in parts:
+            assert part.isdigit()
+            assert 0 <= int(part) <= 255
+
+    @patch('socket.socket')
+    def test_get_local_ip_fallback_on_socket_error(self, mock_socket_class):
+        """Test fallback when socket connection fails."""
+        # Mock socket to raise an exception
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = OSError("Network error")
+        mock_socket_class.return_value = mock_socket
+
+        # Should fall back to hostname resolution or localhost
+        with patch('socket.gethostname', return_value='testhost'):
+            with patch('socket.gethostbyname', return_value='192.168.1.100'):
+                ip = _get_local_ip()
+                assert ip == '192.168.1.100'
+
+    @patch('socket.socket')
+    def test_get_local_ip_final_fallback_to_localhost(self, mock_socket_class):
+        """Test final fallback to 127.0.0.1 when all methods fail."""
+        # Mock socket to fail
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = OSError("Network error")
+        mock_socket_class.return_value = mock_socket
+
+        # Mock hostname resolution to also fail
+        with patch('socket.gethostname', side_effect=OSError("Hostname error")):
+            ip = _get_local_ip()
+            assert ip == '127.0.0.1'
+
+    @patch('socket.socket')
+    def test_get_local_ip_ignores_localhost_from_hostname(self, mock_socket_class):
+        """Test that localhost IPs from hostname resolution are skipped."""
+        # Mock socket to fail
+        mock_socket = MagicMock()
+        mock_socket.connect.side_effect = OSError("Network error")
+        mock_socket_class.return_value = mock_socket
+
+        # Mock hostname to return localhost
+        with patch('socket.gethostname', return_value='localhost'):
+            with patch('socket.gethostbyname', return_value='127.0.0.1'):
+                ip = _get_local_ip()
+                # Should return localhost as final fallback (since hostname returned 127.x)
+                assert ip == '127.0.0.1'
+
+
+class TestPlotHostParameters:
+    """Tests for host and external_host parameters in plot()."""
+
+    def test_plot_default_host(self):
+        """Test that default host is 127.0.0.1."""
+        n = 50
+        data = np.random.randn(n) + 100
+        index = np.arange(n)
+
+        result = plot(
+            index, data, data + 1, data - 1, data,
+            open_browser=False,
+            block=False
+        )
+
+        assert result['status'] == 'success'
+        # Default should bind to localhost
+        assert '127.0.0.1' in result['server_url'] or 'localhost' in result['server_url']
+
+    @patch('webbrowser.open')
+    def test_plot_with_custom_host(self, mock_browser):
+        """Test plot with custom host parameter."""
+        n = 50
+        data = np.random.randn(n) + 100
+        index = np.arange(n)
+
+        # Stop any existing server first to test fresh server with new host
+        stop_server()
+
+        result = plot(
+            index, data, data + 1, data - 1, data,
+            host="127.0.0.1",  # Explicitly set host
+            open_browser=False,
+            block=False
+        )
+
+        assert result['status'] == 'success'
+        assert '127.0.0.1' in result['server_url']
+
+    @patch('webbrowser.open')
+    def test_plot_with_external_host_override(self, mock_browser):
+        """Test plot with external_host parameter overriding display URL."""
+        n = 50
+        data = np.random.randn(n) + 100
+        index = np.arange(n)
+
+        # Stop any existing server first
+        stop_server()
+
+        result = plot(
+            index, data, data + 1, data - 1, data,
+            host="127.0.0.1",
+            external_host="myhost.local",
+            open_browser=True,
+            block=False
+        )
+
+        assert result['status'] == 'success'
+        # Display URL should use external_host
+        assert 'myhost.local' in result['url']
+        assert 'myhost.local' in result['server_url']
+
+        # Browser should be called with external_host URL
+        mock_browser.assert_called_once()
+        call_url = mock_browser.call_args[0][0]
+        assert 'myhost.local' in call_url
+
+    def test_plot_url_contains_session_id(self):
+        """Test that the chart URL includes session ID parameter."""
+        n = 50
+        data = np.random.randn(n) + 100
+        index = np.arange(n)
+
+        result = plot(
+            index, data, data + 1, data - 1, data,
+            session_id='test_session_123',
+            open_browser=False,
+            block=False
+        )
+
+        assert result['status'] == 'success'
+        assert 'session=test_session_123' in result['url']

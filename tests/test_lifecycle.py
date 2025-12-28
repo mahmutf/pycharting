@@ -3,7 +3,7 @@
 import pytest
 import time
 import threading
-from src.pycharting.core.lifecycle import ChartServer
+from pycharting.core.lifecycle import ChartServer
 
 
 class TestChartServer:
