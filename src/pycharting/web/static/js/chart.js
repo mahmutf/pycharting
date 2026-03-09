@@ -173,9 +173,12 @@ class PyChart {
     }
 
     /**
-     * Helper to format x-axis values (indices) to dates
+     * Helper to format x-axis values (indices) to dates.
+     * Adapts format density based on visible time range.
+     * @param {number} index - Bar index (x-axis value)
+     * @param {number} [rangeMs] - Visible time range in ms (controls format density)
      */
-    formatDate(index) {
+    formatDate(index, rangeMs) {
         const barIdx = Math.round(index);
 
         if (!this.timestamps) {
@@ -192,18 +195,65 @@ class PyChart {
                 // Heuristic: Only format as date if value looks like a timestamp (milliseconds)
                 // Threshold: Year 1980 (~3.15e11 ms)
                 if (typeof val === 'number' && val > 315360000000) {
-                    const date = new Date(val);
-                    // Short format: "[barIdx] 10/21 14:30" for x-axis labels
-                    const month = String(date.getMonth() + 1).padStart(2, '0');
-                    const day = String(date.getDate()).padStart(2, '0');
-                    const hours = String(date.getHours()).padStart(2, '0');
-                    const mins = String(date.getMinutes()).padStart(2, '0');
+                    const d = new Date(val);
+                    // Adaptive format based on visible time range
+                    if (rangeMs != null) {
+                        const HOUR = 3600000;
+                        const DAY = 86400000;
+                        if (rangeMs < 2 * HOUR) {
+                            // Tight zoom: just time
+                            return `[${barIdx}] ${d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+                        }
+                        if (rangeMs < 3 * DAY) {
+                            // Intraday/multi-day: date + time
+                            const month = String(d.getMonth() + 1).padStart(2, '0');
+                            const day = String(d.getDate()).padStart(2, '0');
+                            const hours = String(d.getHours()).padStart(2, '0');
+                            const mins = String(d.getMinutes()).padStart(2, '0');
+                            return `[${barIdx}] ${month}/${day} ${hours}:${mins}`;
+                        }
+                        if (rangeMs < 180 * DAY) {
+                            // Weeks/months: month + day
+                            return `[${barIdx}] ${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+                        }
+                        // Very wide: year + month
+                        return `[${barIdx}] ${d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })}`;
+                    }
+                    // Default (no range info): date + time
+                    const month = String(d.getMonth() + 1).padStart(2, '0');
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const hours = String(d.getHours()).padStart(2, '0');
+                    const mins = String(d.getMinutes()).padStart(2, '0');
                     return `[${barIdx}] ${month}/${day} ${hours}:${mins}`;
                 }
                 return `[${barIdx}] ${val}`;
             }
         }
         return `[${barIdx}]`;
+    }
+
+    /**
+     * Compute the visible time range in milliseconds from the current x-axis scale.
+     * Maps visible bar indices to timestamps and returns the difference.
+     * @returns {number|null} Time range in ms, or null if unavailable
+     */
+    _getVisibleTimeRangeMs() {
+        if (!this.chart || !this.timestamps || !this.data || !this.data[0]) {
+            return null;
+        }
+        const scale = this.chart.scales.x;
+        if (!scale || scale.min == null || scale.max == null) {
+            return null;
+        }
+        const startIndex = this.data[0][0] || 0;
+        const minIdx = Math.max(0, Math.round(scale.min - startIndex));
+        const maxIdx = Math.min(this.timestamps.length - 1, Math.round(scale.max - startIndex));
+        const tsMin = this.timestamps[minIdx];
+        const tsMax = this.timestamps[maxIdx];
+        if (typeof tsMin === 'number' && typeof tsMax === 'number' && tsMin > 315360000000) {
+            return tsMax - tsMin;
+        }
+        return null;
     }
     
     /**
@@ -353,10 +403,13 @@ class PyChart {
                     grid: { stroke: this.getGridColor(), width: 1 },
                     space: 100,  // Minimum pixels between x-axis labels to prevent overlap
                     size: 40,    // Fixed height for x-axis area
-                    values: (u, vals) => vals.map(v => {
-                        const idx = Math.round(v);
-                        return self.formatDate(idx);
-                    }),
+                    values: (u, vals) => {
+                        const rangeMs = self._getVisibleTimeRangeMs();
+                        return vals.map(v => {
+                            const idx = Math.round(v);
+                            return self.formatDate(idx, rangeMs);
+                        });
+                    },
                 },
                 {
                     stroke: this.getAxisColor(),

@@ -1153,16 +1153,47 @@
 								show: true,
 								stroke: themeColors.axis,
 								grid: { stroke: themeColors.grid, width: 1 },
-								values: (u, vals) => vals.map(v =>
+								values: (u, vals) =>
 								{
-									const idx = subplotIndices.indexOf(Math.round(v));
-									if (idx !== -1 && subplotTimestamps[idx])
-									{
-										// Show shorter time format for subplots
-										return new Date(subplotTimestamps[idx]).toLocaleTimeString();
+									// Compute visible time range for adaptive formatting
+									let rangeMs = null;
+									if (u.scales && u.scales.x && u.scales.x.min != null && u.scales.x.max != null) {
+										const minBarIdx = subplotIndices.indexOf(Math.round(u.scales.x.min));
+										const maxBarIdx = subplotIndices.indexOf(Math.round(u.scales.x.max));
+										// Fallback to closest indices if exact match not found
+										const effMin = minBarIdx !== -1 ? minBarIdx : 0;
+										const effMax = maxBarIdx !== -1 ? maxBarIdx : subplotTimestamps.length - 1;
+										const tsMin = subplotTimestamps[effMin];
+										const tsMax = subplotTimestamps[effMax];
+										if (typeof tsMin === 'number' && typeof tsMax === 'number' && tsMin > 315360000000) {
+											rangeMs = tsMax - tsMin;
+										}
 									}
-									return v.toFixed(0);
-								})
+									return vals.map(v =>
+									{
+										const idx = subplotIndices.indexOf(Math.round(v));
+										if (idx !== -1 && subplotTimestamps[idx])
+										{
+											const d = new Date(subplotTimestamps[idx]);
+											if (rangeMs != null) {
+												const HOUR = 3600000;
+												const DAY = 86400000;
+												if (rangeMs < 2 * HOUR) {
+													return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+												}
+												if (rangeMs < 3 * DAY) {
+													return d.toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+												}
+												if (rangeMs < 180 * DAY) {
+													return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+												}
+												return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+											}
+											return d.toLocaleTimeString();
+										}
+										return v.toFixed(0);
+									});
+								}
 							},
 							yAxis,
 						],
